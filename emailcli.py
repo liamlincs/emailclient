@@ -9,10 +9,7 @@ from imapclient import IMAPClient
 from email import message_from_bytes
 
 import socket
-import urllib.request
-import urllib.parse
 import socks
-from sockshandler import SocksiPyHandler
 
 DEFAULT_TIMEOUT = 30
 
@@ -23,14 +20,19 @@ CONFIG_FILE = 'config.ini'
 config = configparser.ConfigParser()
 config.read(CONFIG_FILE)
 
-# 创建命令行参数解析器
+# Get configuration parameters
+max_emails = int(config.get('settings', 'max_emails'))
+email_output_dir = config.get('settings', 'email_output_dir')
+proxy = config.get('settings', 'proxy')
+
+# Create a command line argument parser
 parser = argparse.ArgumentParser(description="Email client for POP3 and IMAP4")
 parser.add_argument('--server', help='Email server address')
 parser.add_argument('--user', help='Email account username')
 parser.add_argument('--password', help='Email account password')
-parser.add_argument('--protocol', choices=['POP3', 'IMAP4'], help='Email protocol (POP3 or IMAP4)')
+parser.add_argument('--protocol', help='Email protocol (POP3 or IMAP4)')
 
-# 解析命令行参数
+# Parse command line arguments
 args = parser.parse_args()
 
 # Configure logs
@@ -39,55 +41,62 @@ logging.basicConfig(level=logging.INFO,
                         handlers=[logging.StreamHandler(),
                                   logging.FileHandler('emailcli.log', encoding='utf-8')])
 
-# Get configuration parameters
-max_emails = int(config.get('settings', 'max_emails'))
-email_output_dir = config.get('settings', 'email_output_dir')
-
 class EmailClient:
-    def __init__(self, server, username, password, protocol='POP3', https_proxy=None, socks5_proxy=None):
+    def __init__(self, server, username, password, protocol='POP3', proxy=None):
         self.server = server
         self.username = username
         self.password = password
         self.protocol = protocol
-        self.https_proxy = https_proxy
-        self.socks5_proxy = socks5_proxy
+        if proxy:
+            proxy_protocol, proxy_host, proxy_port = proxy.split(':')
+            if proxy_protocol.find('sock') != -1:
+                proxy_type = socks.SOCKS5
+            else:
+                proxy_type = socks.HTTP
+            proxy_host = proxy_host.replace('//', '')
+            socks.set_default_proxy(proxy_type, proxy_host, int(proxy_port))
+            socket.socket = socks.socksocket
 
     def _create_pop3_connection(self):
-        if self.https_proxy:
-            proxy_url = urllib.parse.urlparse(self.https_proxy)
-            pop3_server = poplib.POP3_SSL(self.server, keyfile=None, certfile=None, context=None,
-                                           timeout=DEFAULT_TIMEOUT, proxy_url=proxy_url)
-        elif self.socks5_proxy:
-            proxy_host, proxy_port = self.socks5_proxy.split(':')
-            socks.set_default_proxy(socks.SOCKS5, proxy_host, int(proxy_port))
-            socket.socket = socks.socksocket
-            pop3_server = poplib.POP3_SSL(self.server, keyfile=None, certfile=None, context=None, timeout=DEFAULT_TIMEOUT)
+        if self.protocol.find('s') != -1:
+            if self.protocol.find(':') != -1:
+                port = int(self.protocol.split(':')[1])
+            else:
+                port = 995
+            pop3_server = poplib.POP3_SSL(self.server, port, timeout=DEFAULT_TIMEOUT)
         else:
-            pop3_server = poplib.POP3_SSL(self.server, keyfile=None, certfile=None, context=None, timeout=DEFAULT_TIMEOUT)
+            if self.protocol.find(':') != -1:
+                port = int(self.protocol.split(':')[1])
+            else:
+                port = 110
+            pop3_server = poplib.POP3(self.server, timeout=DEFAULT_TIMEOUT)
 
         return pop3_server
 
     def _create_imap4_connection(self):
-        if self.https_proxy:
-            proxy_url = urllib.parse.urlparse(self.https_proxy)
-            opener = urllib.request.build_opener(SocksiPyHandler(proxy_url.scheme, proxy_url.hostname, proxy_url.port))
-            urllib.request.install_opener(opener)
-        elif self.socks5_proxy:
-            proxy_host, proxy_port = self.socks5_proxy.split(':')
-            socks.set_default_proxy(socks.SOCKS5, proxy_host, int(proxy_port))
-            socket.socket = socks.socksocket
+        if self.protocol.find('s') != -1:
+            if self.protocol.find(':') != -1:
+                port = int(self.protocol.split(':')[1])
+            else:
+                port = 993
+            bSSL = True
         else:
-            imap4_server = IMAPClient(self.server, timeout=DEFAULT_TIMEOUT)
+            if self.protocol.find(':') != -1:
+                port = int(self.protocol.split(':')[1])
+            else:
+                port = 143
+            bSSL = False
+        imap4_server = IMAPClient(self.server, port, ssl = bSSL, timeout=DEFAULT_TIMEOUT)
         
         return imap4_server
 
     def connect(self):
         try:
-            if self.protocol == 'POP3':
+            if self.protocol.find('POP3') != -1:
                 self.mailbox = self._create_pop3_connection()
                 self.mailbox.user(self.username)
                 self.mailbox.pass_(self.password)
-            elif self.protocol == 'IMAP4':                
+            elif self.protocol.find('IMAP4') != -1:                
                 self.mailbox = self._create_imap4_connection()
                 self.mailbox.login(self.username, self.password)
                 if self.server == 'imap.163.com':
@@ -99,9 +108,9 @@ class EmailClient:
             raise
 
     def fetch_emails(self):
-        if self.protocol == 'POP3':
+        if self.protocol.find('POP3') != -1:
             return self._fetch_pop3_emails()
-        elif self.protocol == 'IMAP4':
+        elif self.protocol.find('IMAP4') != -1:
             return self._fetch_imap4_emails()
 
     def _fetch_pop3_emails(self):
@@ -216,9 +225,9 @@ class EmailClient:
 
     def close(self):
         try:
-            if self.protocol == 'POP3':
+            if self.protocol.find('POP3') != -1:
                 self.mailbox.quit()
-            elif self.protocol == 'IMAP4':
+            elif self.protocol.find('IMAP4') != -1:
                 self.mailbox.logout()
         except:
             logging.error(traceback.format_exc())
@@ -232,18 +241,18 @@ def process_email_account(email_client):
 
 def read_accounts_from_file(file_path):
     email_clients = []
-
-    with open(file_path, 'r') as f:
-        for line in f:
-            account_info = line.strip().split(',')
-            if len(account_info) == 4:
-                server, username, password, protocol = account_info
+    try:
+        with open(file_path, 'r') as f:
+            for line in f:
+                server, username, password, protocol = line.strip().split(',')
                 email_clients.append(EmailClient(server, username, password, protocol.upper()))
-
+    except:
+        logging.error(traceback.format_exc())
     return email_clients
 
 def main():
     email_clients = []
+    
     # If all necessary information is provided through command line arguments, process the account directly
     if args.server and args.user and args.password and args.protocol:
         email_clients.append(EmailClient(args.server, args.user, args.password, args.protocol))
