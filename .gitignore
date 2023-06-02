@@ -3,3 +3,12 @@ accounts.txt
 *.log
 eml_outdir
 config.ini
+decaccounts.py
+decrypted_acc.txt
+emailclient.py
+eml_erruid/IMAP4S/4025347@qq.com/Sent Messages/20230528_2D681D1A57088D515DADEC31@qq.com.eml
+encaccounts.py
+encrypted_acc.txt
+file_mv.py
+genkey.py
+key.key
